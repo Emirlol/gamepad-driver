@@ -207,9 +207,9 @@ void emitBasedOnButtons(const unsigned char data[]) {
 	const int rightStickX = ((data[10] << 8) | data[11]) - 32768;
 	const int rightStickY = ((data[12] << 8) | data[13]) - 32768;
 	// if (leftStickX != prev_left_stick_x) emit(EV_ABS, ABS_X, leftStickX);
-	if (leftStickY != prev_left_stick_y) emit(EV_ABS, ABS_Y, leftStickY);
+	if (leftStickY != prev_left_stick_y) emit(EV_ABS, ABS_Y, leftStickY * -1);
 	if (rightStickX != prev_right_stick_x) emit(EV_ABS, ABS_RX, rightStickX);
-	if (rightStickY != prev_right_stick_y) emit(EV_ABS, ABS_RY, rightStickY);
+	if (rightStickY != prev_right_stick_y) emit(EV_ABS, ABS_RY, rightStickY * -1);
 	const int leftTrigger = data[4] * 32767 / 255;
 	const int rightTrigger = data[5] * 32767 / 255;
 	if (leftTrigger != prev_left_trigger || rightTrigger != prev_right_trigger) {
