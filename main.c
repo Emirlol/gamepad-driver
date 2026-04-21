@@ -5,22 +5,47 @@
 #include <signal.h>
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
-#include <pthread.h>
 
 #define VIRTUAL_DEVICE_VID 0x1234
 #define VIRTUAL_DEVICE_PID 0x5678
 
 #define PAD_VID 0x046d
 #define PAD_PID 0xc21f
-// #define DEBUG 1
+#define DEBUG 1
+
+#define IOCTL(fd, request...) \
+	do { \
+		if (ioctl(fd, request) == -1) { \
+			perror("ioctl " #request); \
+			return -1; \
+		} \
+	} while (0)
+
+#define SETUP_ABS(type, min, max, res, flat_) \
+	do { \
+		IOCTL(fd, UI_SET_ABSBIT, type); \
+		struct uinput_abs_setup abs = { \
+			.code = type, \
+			.absinfo = { \
+				.minimum = min, \
+				.maximum = max, \
+				.resolution = res, \
+				.flat = flat_ \
+			} \
+		}; \
+		IOCTL(fd, UI_ABS_SETUP, &abs); \
+	} while (0)
 
 int fd;
+static int interface_claimed = 0;
+static int kernel_driver_detached = 0;
+static int uinput_created = 0;
 libusb_device_handle *handle;
 libusb_context *ctx;
-pthread_mutex_t lock;
+static volatile sig_atomic_t stop_requested = 0;
 
 typedef enum {
-	DPAD_UP = 01,
+	DPAD_UP = 0x1,
 	DPAD_DOWN = 0x2,
 	DPAD_LEFT = 0x4,
 	DPAD_RIGHT = 0x8,
@@ -33,6 +58,7 @@ typedef enum {
 typedef enum {
 	LB = 0x1,
 	RB = 0x2,
+	LOGITECH = 0x4,
 	A = 0x10,
 	B = 0x20,
 	X = 0x40,
@@ -57,104 +83,138 @@ void emit(const int type, const int code, const int val) {
 	write(fd, &ie, sizeof(ie));
 }
 
-static void setupAbs(const int type, const int min, const int max, const int res, const int flat) {
-	if (ioctl(fd, UI_SET_ABSBIT, type) == -1) {
-		perror("Failed to set ABS bit");
-		raise(SIGTERM);
+static void disconnect_device(void) {
+	if (handle == nullptr) {
+		return;
 	}
-	struct uinput_abs_setup abs = {
-		.code = type,
-		.absinfo = {
-			.minimum = min,
-			.maximum = max,
-			.resolution = res,
-			.flat = flat
-		}
-	};
 
-	if (ioctl(fd, UI_ABS_SETUP, &abs) == -1) raise(SIGTERM);
-}
-
-void handle_signal(const int signal) {
-	if (handle != nullptr) {
+	if (interface_claimed) {
 		libusb_release_interface(handle, 0);
+		interface_claimed = 0;
+	}
+
+	if (kernel_driver_detached) {
 		libusb_attach_kernel_driver(handle, 0);
-		libusb_close(handle);
-		handle = nullptr;
+		kernel_driver_detached = 0;
 	}
-	if (fd > 0) {
-		sleep(1); // Give userspace some time to read the events before we destroy the device with UI_DEV_DESTROY.
-		ioctl(fd, UI_DEV_DESTROY);
-		close(fd);
-		fd = -1;
-	}
-	if (ctx != nullptr) libusb_exit(ctx);
-	pthread_mutex_destroy(&lock);
-	exit(signal);
+
+	libusb_close(handle);
+	handle = nullptr;
 }
 
-void setup_uinput() {
-	fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-	if (fd < 0) {
-		perror("Failed to open /dev/uinput");
-		raise(SIGTERM);
-	}
-	ioctl(fd, UI_SET_EVBIT, EV_KEY);
-	constexpr int buttons[] = {BTN_TL, BTN_TR, BTN_BACK, BTN_START, BTN_THUMBL, BTN_THUMBR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST};
-
-	for (int i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++)
-		ioctl(fd, UI_SET_KEYBIT, buttons[i]);
-
-	ioctl(fd, UI_SET_EVBIT, EV_ABS);
-	setupAbs(ABS_X, -32768, 32767, 0, 0);
-	setupAbs(ABS_Y, -32768, 32767, 0, 0);
-	setupAbs(ABS_RX, -32768, 32767, 0, 0);
-	setupAbs(ABS_RY, -32768, 32767, 0, 0);
-	setupAbs(ABS_Z, 0, 255, 0, 0);
-	setupAbs(ABS_RZ, 0, 255, 0, 0);
-	setupAbs(ABS_HAT0X, -1, 1, 0, 0);
-	setupAbs(ABS_HAT0Y, -1, 1, 0, 0);
-
-	struct uinput_setup usetup = {
-		.id = {
-			.bustype = BUS_USB,
-			.vendor = PAD_VID,
-			.product = PAD_PID,
-		},
-		.name = "Input handler"
-	};
-
-	ioctl(fd, UI_DEV_SETUP, &usetup);
-	ioctl(fd, UI_DEV_CREATE);
-}
-
-void connect_to_device() {
+static int connect_to_device() {
 	libusb_device **list;
 	const ssize_t count = libusb_get_device_list(ctx, &list);
+	if (count < 0) {
+		fprintf(stderr, "libusb_get_device_list: %s\n", libusb_error_name((int)count));
+		return -1;
+	}
+
 	for (ssize_t i = 0; i < count; i++) {
 		libusb_device *device = list[i];
 
 		struct libusb_device_descriptor desc;
-		libusb_get_device_descriptor(device, &desc);
+		int ret = libusb_get_device_descriptor(device, &desc);
+		if (ret != 0) continue;
+
 		if (desc.idVendor != PAD_VID || desc.idProduct != PAD_PID) continue;
 
-		libusb_open(device, &handle);
-		if (handle != nullptr) {
-			if (libusb_kernel_driver_active(handle, 0) == 1) {
-				libusb_detach_kernel_driver(handle, 0);
+		ret = libusb_open(device, &handle);
+		if (ret != 0) continue;
+
+		if (libusb_kernel_driver_active(handle, 0) == 1) {
+			ret = libusb_detach_kernel_driver(handle, 0);
+			if (ret != 0) {
+				fprintf(stderr, "libusb_detach_kernel_driver: %s\n", libusb_error_name(ret));
+				libusb_close(handle);
+				handle = nullptr;
+				continue;
 			}
-			libusb_release_interface(handle, 0);
-			libusb_claim_interface(handle, 0);
-			libusb_ref_device(device);
+			kernel_driver_detached = 1;
 		}
-		break;
+
+		ret = libusb_claim_interface(handle, 0);
+		if (ret != 0) {
+			disconnect_device();
+			continue;
+		}
+
+		interface_claimed = 1;
+		libusb_free_device_list(list, 1);
+
+		return 0;
 	}
 	libusb_free_device_list(list, 1);
+	return -1;
+}
+
+static void destroy_uinput() {
+	if (fd >= 0) {
+		if (uinput_created) {
+			ioctl(fd, UI_DEV_DESTROY);
+			uinput_created = 0;
+		}
+		close(fd);
+		fd = -1;
+	}
+}
+
+static void on_signal(const int signal) {
+	stop_requested = signal;
+}
+
+void cleanup() {
+	disconnect_device();
+	destroy_uinput();
+	if (ctx != nullptr) {
+		libusb_exit(ctx);
+		ctx = nullptr;
+	}
+}
+
+static int setup_uinput() {
+	fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+	if (fd < 0) {
+		perror("open /dev/uinput");
+		return -1;
+	}
+	IOCTL(fd, UI_SET_EVBIT, EV_KEY);
+	constexpr int buttons[] = {BTN_TL, BTN_TR, BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST};
+
+	constexpr size_t num_buttons = sizeof(buttons) / sizeof(buttons[0]);
+	for (int i = 0; i < num_buttons; i++) {
+		IOCTL(fd, UI_SET_KEYBIT, buttons[i]);
+	}
+
+	IOCTL(fd, UI_SET_EVBIT, EV_ABS);
+
+	SETUP_ABS(ABS_X, -32768, 32767, 0, 0);
+	SETUP_ABS(ABS_Y, -32768, 32767, 0, 0);
+	SETUP_ABS(ABS_RX, -32768, 32767, 0, 0);
+	SETUP_ABS(ABS_RY, -32768, 32767, 0, 0);
+	SETUP_ABS(ABS_Z, 0, 255, 0, 0);
+	SETUP_ABS(ABS_RZ, 0, 255, 0, 0);
+	SETUP_ABS(ABS_HAT0X, -1, 1, 0, 0);
+	SETUP_ABS(ABS_HAT0Y, -1, 1, 0, 0);
+
+	struct uinput_setup usetup = {
+		.id = {
+			.bustype = BUS_USB,
+			.vendor = VIRTUAL_DEVICE_VID,
+			.product = VIRTUAL_DEVICE_PID,
+		},
+		.name = "Input handler"
+	};
+
+	IOCTL(fd, UI_DEV_SETUP, &usetup);
+	IOCTL(fd, UI_DEV_CREATE);
+	uinput_created = 1;
+	return 0;
 }
 
 void setup_signal_handlers() {
 	struct sigaction sa;
-	sa.sa_handler = handle_signal;
+	sa.sa_handler = on_signal;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;
 
@@ -162,7 +222,6 @@ void setup_signal_handlers() {
 	sigaction(SIGTERM, &sa, nullptr);
 	sigaction(SIGQUIT, &sa, nullptr);
 	sigaction(SIGABRT, &sa, nullptr);
-	// SIGKILL is not included because it cannot be caught.
 }
 
 static int prev_buttons_one = 0, prev_buttons_two = 0;
@@ -200,6 +259,7 @@ void emit_data(const unsigned char data[]) {
 	if (buttons_two != prev_buttons_two) {
 		emit(EV_KEY, BTN_TL, (buttons_two & LB) ? 1 : 0);
 		emit(EV_KEY, BTN_TR, (buttons_two & RB) ? 1 : 0);
+		emit(EV_KEY, BTN_MODE, (buttons_two & LOGITECH) ? 1 : 0);
 		emit(EV_KEY, BTN_SOUTH, (buttons_two & A) ? 1 : 0);
 		emit(EV_KEY, BTN_EAST, (buttons_two & B) ? 1 : 0);
 		emit(EV_KEY, BTN_NORTH, (buttons_two & X) ? 1 : 0);
@@ -242,10 +302,14 @@ void emit_data(const unsigned char data[]) {
 }
 
 int main(void) {
-	pthread_mutex_init(&lock, nullptr);
+	int rc = EXIT_FAILURE;
 	setup_signal_handlers();
-	libusb_init(&ctx);
-	setup_uinput();
+	if (libusb_init(&ctx) != 0) {
+		goto out;
+	}
+	if (setup_uinput() != 0) {
+		goto out;
+	}
 
 	/*
 	 * On UI_DEV_CREATE the kernel will create the device node for this
@@ -255,18 +319,21 @@ int main(void) {
 	 * to send. This pause is only needed in our example code!
 	 */
 	sleep(1);
-	while (true) {
+	while (!stop_requested) {
 		connect_to_device();
-		while (handle == nullptr) {
+		while (!stop_requested && handle == nullptr) {
 			printf("No device found. Retrying in 1 second\n");
 			sleep(1);
 			connect_to_device();
 		}
+		if (stop_requested) {
+			break;
+		}
 		printf("Connected to device, waiting for input.\n");
 		int actual_length;
-		while (true) {
+		while (!stop_requested) {
 			unsigned char data[20];
-			const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 0);
+			const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 250);
 			if (ret == 0 && actual_length > 0 && actual_length == sizeof(data)) {
 				emit_data(data);
 #ifdef DEBUG
@@ -275,15 +342,30 @@ int main(void) {
 				}
 				printf("\n");
 #endif
-			} else if (ret != LIBUSB_ERROR_TIMEOUT && ret != LIBUSB_ERROR_IO) {
+				continue;
+			}
+
+			if (ret == LIBUSB_ERROR_TIMEOUT) {
+				// No data received within timeout, just continue waiting but start over so we check `stop_requested`
+				continue;
+			}
+
+			if (ret != LIBUSB_ERROR_IO) {
 				fprintf(stderr, "Error receiving data: %s\n", libusb_error_name(ret));
 				break;
 			}
 		}
-		libusb_close(handle);
-		handle = nullptr;
+		disconnect_device();
 
-		printf("Connection terminated. Retrying in 1 second.\n");
-		sleep(1);
+		if (!stop_requested) {
+			printf("Connection terminated. Retrying in 1 second.\n");
+			sleep(1);
+		}
 	}
+
+	rc = EXIT_SUCCESS;
+
+out:
+	cleanup();
+	return rc;
 }
