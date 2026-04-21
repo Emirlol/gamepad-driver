@@ -14,6 +14,7 @@
 
 #define PAD_VID 0x046d
 #define PAD_PID 0xc21f
+// #define DEBUG 1
 
 int fd;
 libusb_device_handle *handle;
@@ -258,10 +259,12 @@ int main(void) {
 			const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 0);
 			if (ret == 0 && actual_length > 0 && actual_length == sizeof(data)) {
 				emitBasedOnButtons(data);
-				// for (int i = 0; i < actual_length; i++) {
-				// 	printf("%02x ", data[i]);
-				// }
-				// printf("\n");
+#ifdef DEBUG
+				for (int i = 0; i < actual_length; i++) {
+					printf("%02x ", data[i]);
+				}
+				printf("\n");
+#endif
 			} else if (ret != LIBUSB_ERROR_TIMEOUT && ret != LIBUSB_ERROR_IO) {
 				fprintf(stderr, "Error receiving data: %s\n", libusb_error_name(ret));
 				break;
