@@ -135,22 +135,23 @@ void connect_to_device() {
 	const ssize_t count = libusb_get_device_list(ctx, &list);
 	for (ssize_t i = 0; i < count; i++) {
 		libusb_device *device = list[i];
+
 		struct libusb_device_descriptor desc;
 		libusb_get_device_descriptor(device, &desc);
-		if (desc.idVendor == PAD_VID && desc.idProduct == PAD_PID) {
-			libusb_open(device, &handle);
-			if (handle != nullptr) {
-				if (libusb_kernel_driver_active(handle, 0) == 1) {
-					libusb_detach_kernel_driver(handle, 0);
-				}
-				libusb_release_interface(handle, 0);
-				libusb_claim_interface(handle, 0);
-				libusb_ref_device(device);
+		if (desc.idVendor != PAD_VID || desc.idProduct != PAD_PID) continue;
+
+		libusb_open(device, &handle);
+		if (handle != nullptr) {
+			if (libusb_kernel_driver_active(handle, 0) == 1) {
+				libusb_detach_kernel_driver(handle, 0);
 			}
-			libusb_free_device_list(list, 1);
-			break;
+			libusb_release_interface(handle, 0);
+			libusb_claim_interface(handle, 0);
+			libusb_ref_device(device);
 		}
+		break;
 	}
+	libusb_free_device_list(list, 1);
 }
 
 void setup_signal_handlers() {
@@ -258,7 +259,7 @@ int main(void) {
 			unsigned char data[20];
 			const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 0);
 			if (ret == 0 && actual_length > 0 && actual_length == sizeof(data)) {
-				emitBasedOnButtons(data);
+				emit_data(data);
 #ifdef DEBUG
 				for (int i = 0; i < actual_length; i++) {
 					printf("%02x ", data[i]);
