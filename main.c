@@ -100,7 +100,7 @@ void setup_uinput() {
 		raise(SIGTERM);
 	}
 	ioctl(fd, UI_SET_EVBIT, EV_KEY);
-	constexpr int buttons[] = {BTN_TL, BTN_TR, BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_SOUTH};
+	constexpr int buttons[] = {BTN_TL, BTN_TR, BTN_BACK, BTN_START, BTN_THUMBL, BTN_THUMBR, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST};
 
 	for (int i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++)
 		ioctl(fd, UI_SET_KEYBIT, buttons[i]);
