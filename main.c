@@ -83,7 +83,7 @@ void handle_signal(const int signal) {
 		handle = nullptr;
 	}
 	if (fd > 0) {
-		sleep(1); // Give userspace some time to read the events before we destroy the device with UI_DEV_DESTOY.
+		sleep(1); // Give userspace some time to read the events before we destroy the device with UI_DEV_DESTROY.
 		ioctl(fd, UI_DEV_DESTROY);
 		close(fd);
 		fd = -1;
