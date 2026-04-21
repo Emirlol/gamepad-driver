@@ -280,6 +280,9 @@ int main(void) {
 				break;
 			}
 		}
+		libusb_close(handle);
+		handle = nullptr;
+
 		printf("Connection terminated. Retrying in 1 second.\n");
 		sleep(1);
 	}
