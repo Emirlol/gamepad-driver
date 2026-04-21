@@ -170,64 +170,75 @@ static int prev_left_stick_x = 0, prev_left_stick_y = 0;
 static int prev_right_stick_x = 0, prev_right_stick_y = 0;
 static int prev_left_trigger = 0, prev_right_trigger = 0;
 
-void emitBasedOnButtons(const unsigned char data[]) {
-	const int buttonsOne = data[2];
-	if (buttonsOne != prev_buttons_one) {
-		if (buttonsOne & DPAD_DOWN) {
+void emit_data(const unsigned char data[]) {
+	const int buttons_one = data[2];
+	int dpad_x = 0;
+	if (buttons_one & DPAD_LEFT) {
+		// emit(EV_ABS, ABS_HAT0X, -1);
+		dpad_x = -32768;
+	} else if (buttons_one & DPAD_RIGHT) {
+		// emit(EV_ABS, ABS_HAT0X, 1);
+		dpad_x = 32767;
+	} else {
+		// emit(EV_ABS, ABS_HAT0X, 0);
+	}
+	if (buttons_one != prev_buttons_one) {
+		if (buttons_one & DPAD_DOWN) {
 			emit(EV_ABS, ABS_HAT0Y, 1);
-		} else if (buttonsOne & DPAD_UP) {
+		} else if (buttons_one & DPAD_UP) {
 			emit(EV_ABS, ABS_HAT0Y, -1);
 		} else {
 			emit(EV_ABS, ABS_HAT0Y, 0);
 		}
 
-		if (buttonsOne & DPAD_LEFT) {
-			emit(EV_ABS, ABS_HAT0X, -1);
-		} else if (buttonsOne & DPAD_RIGHT) {
-			emit(EV_ABS, ABS_HAT0X, 1);
-		} else {
-			emit(EV_ABS, ABS_HAT0X, 0);
-		}
-		emit(EV_KEY, BTN_START, (buttonsOne & START) ? 1 : 0);
-		emit(EV_KEY, BTN_BACK, (buttonsOne & BACK) ? 1 : 0);
-		emit(EV_KEY, BTN_THUMBL, (buttonsOne & LEFT_STICK) ? 1 : 0);
-		emit(EV_KEY, BTN_THUMBR, (buttonsOne & RIGHT_STICK) ? 1 : 0);
+		emit(EV_KEY, BTN_START, (buttons_one & START) ? 1 : 0);
+		emit(EV_KEY, BTN_BACK, (buttons_one & BACK) ? 1 : 0);
+		emit(EV_KEY, BTN_THUMBL, (buttons_one & LEFT_STICK) ? 1 : 0);
+		emit(EV_KEY, BTN_THUMBR, (buttons_one & RIGHT_STICK) ? 1 : 0);
 	}
-	const int buttonsTwo = data[3];
-	if (buttonsTwo != prev_buttons_two) {
-		emit(EV_KEY, BTN_TL, (buttonsTwo & LB) ? 1 : 0);
-		emit(EV_KEY, BTN_TR, (buttonsTwo & RB) ? 1 : 0);
-		emit(EV_KEY, BTN_SOUTH, (buttonsTwo & A) ? 1 : 0);
-		emit(EV_KEY, BTN_EAST, (buttonsTwo & B) ? 1 : 0);
-		emit(EV_KEY, BTN_NORTH, (buttonsTwo & X) ? 1 : 0);
-		emit(EV_KEY, BTN_WEST, (buttonsTwo & Y) ? 1 : 0);
+	const int buttons_two = data[3];
+	if (buttons_two != prev_buttons_two) {
+		emit(EV_KEY, BTN_TL, (buttons_two & LB) ? 1 : 0);
+		emit(EV_KEY, BTN_TR, (buttons_two & RB) ? 1 : 0);
+		emit(EV_KEY, BTN_SOUTH, (buttons_two & A) ? 1 : 0);
+		emit(EV_KEY, BTN_EAST, (buttons_two & B) ? 1 : 0);
+		emit(EV_KEY, BTN_NORTH, (buttons_two & X) ? 1 : 0);
+		emit(EV_KEY, BTN_WEST, (buttons_two & Y) ? 1 : 0);
 	}
-	// const int leftStickX = ((data[6] << 8) | data[7]) - 32768;
-	const int leftStickY = ((data[8] << 8) | data[9]) - 32768;
-	const int rightStickX = ((data[10] << 8) | data[11]) - 32768;
-	const int rightStickY = ((data[12] << 8) | data[13]) - 32768;
-	// if (leftStickX != prev_left_stick_x) emit(EV_ABS, ABS_X, leftStickX);
-	if (leftStickY != prev_left_stick_y) emit(EV_ABS, ABS_Y, leftStickY * -1);
-	if (rightStickX != prev_right_stick_x) emit(EV_ABS, ABS_RX, rightStickX);
-	if (rightStickY != prev_right_stick_y) emit(EV_ABS, ABS_RY, rightStickY * -1);
-	const int leftTrigger = data[4] * 32767 / 255;
-	const int rightTrigger = data[5] * 32767 / 255;
-	if (leftTrigger != prev_left_trigger || rightTrigger != prev_right_trigger) {
-		int difference = rightTrigger - leftTrigger;
-		if (abs(difference) <= 6) difference = 0; // Prevent "stick drift"
-		emit(EV_ABS, ABS_X, difference);
+	// const int left_stick_x = ((data[6] << 8) | data[7]) - 32768;
+	const int left_stick_y = ((data[8] << 8) | data[9]) - 32768;
+	const int right_stick_x = ((data[10] << 8) | data[11]) - 32768;
+	const int right_stick_y = ((data[12] << 8) | data[13]) - 32768;
+	// if (left_stick_x != prev_left_stick_x) emit(EV_ABS, ABS_X, left_stick_x);
+	if (left_stick_y != prev_left_stick_y) emit(EV_ABS, ABS_Y, left_stick_y * -1);
+	if (right_stick_x != prev_right_stick_x) emit(EV_ABS, ABS_RX, right_stick_x);
+	if (right_stick_y != prev_right_stick_y) emit(EV_ABS, ABS_RY, right_stick_y * -1);
+	const int left_trigger = data[4] * 32767 / 255;
+	const int right_trigger = data[5] * 32767 / 255;
+	int final_left_stick_x;
+	if (dpad_x != 0) {
+		// Dpad maxes out the left stick for full left/right input, so LT/RT are ignored during this
+		final_left_stick_x = dpad_x;
+	} else {
+		final_left_stick_x = right_trigger - left_trigger;
+		if (abs(final_left_stick_x) <= 6) final_left_stick_x = 0; // Prevent "stick drift"
+	}
+
+	if (final_left_stick_x != prev_left_stick_x) {
+		emit(EV_ABS, ABS_X, final_left_stick_x);
+		prev_left_stick_x = final_left_stick_x;
 	}
 
 	emit(EV_SYN, SYN_REPORT, 0);
 
-	prev_buttons_one = buttonsOne;
-	prev_buttons_two = buttonsTwo;
-	// prev_left_stick_x = leftStickX;
-	prev_left_stick_y = leftStickY;
-	prev_right_stick_x = rightStickX;
-	prev_right_stick_y = rightStickY;
-	prev_left_trigger = leftTrigger;
-	prev_right_trigger = rightTrigger;
+	prev_buttons_one = buttons_one;
+	prev_buttons_two = buttons_two;
+	// prev_left_stick_x = left_stick_x;
+	prev_left_stick_y = left_stick_y;
+	prev_right_stick_x = right_stick_x;
+	prev_right_stick_y = right_stick_y;
+	prev_left_trigger = left_trigger;
+	prev_right_trigger = right_trigger;
 }
 
 int main(void) {
