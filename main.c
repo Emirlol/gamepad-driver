@@ -106,7 +106,7 @@ static int connect_to_device() {
 	libusb_device **list;
 	const ssize_t count = libusb_get_device_list(ctx, &list);
 	if (count < 0) {
-		fprintf(stderr, "libusb_get_device_list: %s\n", libusb_error_name((int)count));
+		fprintf(stderr, "libusb_get_device_list: %s\n", libusb_error_name((int) count));
 		return -1;
 	}
 
@@ -319,49 +319,38 @@ int main(void) {
 	 * to send. This pause is only needed in our example code!
 	 */
 	sleep(1);
+
+	if (connect_to_device() != 0) {
+		fprintf(stderr, "Could not find or connect to device.\n");
+		goto out;
+	}
+
+	int actual_length;
 	while (!stop_requested) {
-		connect_to_device();
-		while (!stop_requested && handle == nullptr) {
-			printf("No device found. Retrying in 1 second\n");
-			sleep(1);
-			connect_to_device();
+		unsigned char data[20];
+		const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 250);
+		if (ret == 0 && actual_length > 0 && actual_length == sizeof(data)) {
+			emit_data(data);
+#ifdef DEBUG
+			for (int i = 0; i < actual_length; i++) {
+				printf("%02x ", data[i]);
+			}
+			printf("\n");
+#endif
+			continue;
 		}
-		if (stop_requested) {
+
+		if (ret == LIBUSB_ERROR_TIMEOUT) {
+			// No data received within timeout, just continue waiting but start over so we check `stop_requested`
+			continue;
+		}
+
+		if (ret != LIBUSB_ERROR_IO) {
+			fprintf(stderr, "Error receiving data: %s\n", libusb_error_name(ret));
 			break;
 		}
-		printf("Connected to device, waiting for input.\n");
-		int actual_length;
-		while (!stop_requested) {
-			unsigned char data[20];
-			const int ret = libusb_bulk_transfer(handle, 0x81, data, sizeof(data), &actual_length, 250);
-			if (ret == 0 && actual_length > 0 && actual_length == sizeof(data)) {
-				emit_data(data);
-#ifdef DEBUG
-				for (int i = 0; i < actual_length; i++) {
-					printf("%02x ", data[i]);
-				}
-				printf("\n");
-#endif
-				continue;
-			}
-
-			if (ret == LIBUSB_ERROR_TIMEOUT) {
-				// No data received within timeout, just continue waiting but start over so we check `stop_requested`
-				continue;
-			}
-
-			if (ret != LIBUSB_ERROR_IO) {
-				fprintf(stderr, "Error receiving data: %s\n", libusb_error_name(ret));
-				break;
-			}
-		}
-		disconnect_device();
-
-		if (!stop_requested) {
-			printf("Connection terminated. Retrying in 1 second.\n");
-			sleep(1);
-		}
 	}
+	disconnect_device();
 
 	rc = EXIT_SUCCESS;
 
